@@ -1,96 +1,474 @@
 /******************************************************************************
- ** ISCTE-IUL: Trabalho prático 2 de Sistemas Operativos
+ ** ISCTE-IUL: Trabalho prático 3 de Sistemas Operativos
  **
- ** Aluno: Rodrigo Miguel Cosme dos Santos Nº: 111255      Nome: Rodrigo Miguel Cosme dos Santos
- ** Nome do Módulo: servidor.c v1.1 (melhoria nas mensagens de debug das funções)
- ** Descrição/Explicação do Módulo: Neste módulo, nao comentei muito pois já se apresentava lá num comentário literalmente o que a função 
- **    ia fazer... mas neste módulo vai se armar sinais para criar servidores dedicados e saber quando eles terminam, criando fifos (named pipes) no seu processo
+ ** Aluno: Rodrigo Miguel Cosme dos Santos  Nº: 111255      Nome: Rodrigo Miguel Cosme dos Santos
+ ** Nome do Módulo: servidor.c v2 (https://moodle22.iscte-iul.pt/mod/forum/discuss.php?d=6117#p10339)
+ ** Descrição/Explicação do Módulo: este módulo serve para criar a memória partilhada (SHM), uma fila de mensagens(MSG) e um semaforo (shm) e sinais, 
+ **                                 mandando e recebendo mensagens para o cliente validado e alterando os valores nas bases de dados
  **
  **
  ******************************************************************************/
 #include "common.h"
 // #define SO_HIDE_DEBUG   // Uncomment this line to hide all @DEBUG statements
 #include "so_utils.h"
-
-#include <sys/types.h>
-#include <sys/stat.h>
 #include <sys/wait.h>
 
 /* Variáveis globais */
-Login clientRequest; // Variável que tem o pedido enviado do Cliente para o Servidor
-int index_client;    // Índice do cliente que fez o pedido ao servidor/servidor dedicado na BD
+int shmId = RET_ERROR;                  // Variável que tem o ID da Shared Memory
+int msgId = RET_ERROR;                  // Variável que tem o ID da Message Queue
+int semId = RET_ERROR;                  // Variável que tem o ID do Grupo de Semáforos
+MsgContent msg;                         // Variável que serve para todas as mensagens trocadas entre Cliente e Servidor
+DadosServidor *db = NULL;               // Variável que vai ficar com UM POINTER PARA a memória partilhada
+int indexClient;                        // Índice do cliente que fez o pedido ao servidor/servidor dedicado na BD
+// int nrServidoresDedicados = 0;          // Número de Servidores Dedicados criados.
 
-/* Protótipos de funções */
-int existsDB_S1(char *);                // S1:   Função a ser implementada pelos alunos
-int createFifo_S2(char *);              // S2:   Função a ser implementada pelos alunos
-int triggerSignals_S3();                // S3:   Função a ser implementada pelos alunos
-Login readRequest_S4(char *);           // S4:   Função a ser implementada pelos alunos
-int createServidorDedicado_S5();        // S5:   Função a ser implementada pelos alunos
-void deleteFifoAndExit_S6();            // S6:   Função a ser implementada pelos alunos
-void trataSinalSIGINT_S7(int);          // S7:   Função a ser implementada pelos alunos
-void trataSinalSIGCHLD_S8(int);         // S8:   Função a ser implementada pelos alunos
-int triggerSignals_SD9();               // SD9:  Função a ser implementada pelos alunos
-int validaPedido_SD10(Login);           // SD10:  Função a ser implementada pelos alunos
-int buildNomeFifo(char *, int, char *, int, char *); // Função a ser implementada pelos alunos
-int procuraUtilizadorBD_SD11(Login, char *, Login *); // SD11: Função a ser implementada pelos alunos
-int reservaUtilizadorBD_SD12(Login *, char *, int, Login);  // SD12: Função a ser implementada pelos alunos
-int createFifo_SD13();                  // SD13: Função a ser implementada pelos alunos
-int sendAckLogin_SD14(Login, char *);   // SD14: Função a ser implementada pelos alunos
-int readFimSessao_SD15(char *);         // SD15: Função a ser implementada pelos alunos
-int terminaSrvDedicado_SD16(Login *, char *, int);  // SD16: Função a ser implementada pelos alunos
-void deleteFifoAndExit_SD17();          // SD17: Função a ser implementada pelos alunos
-void trataSinalSIGUSR1_SD18(int);       // SD18: Função a ser implementada pelos alunos
+/* Protótipos de funções. Os alunos não devem alterar estes protótipos. */
+int initShm_S1();                       // S1:   Função a ser completada pelos alunos (definida abaixo)
+int initMsg_S2();                       // S2:   Função a ser completada pelos alunos (definida abaixo)
+int initSem_S3();                       // S3:   Função a ser completada pelos alunos (definida abaixo)
+int triggerSignals_S4();                // S4:   Função a ser completada pelos alunos (definida abaixo)
+MsgContent receiveClientLogin_S5();     // S5:   Função a ser completada pelos alunos (definida abaixo)
+int createServidorDedicado_S6();        // S6:   Função a ser completada pelos alunos (definida abaixo)
+void shutdownAndExit_S7();              // S7:   Função a ser completada pelos alunos (definida abaixo)
+void handleSignalSIGINT_S8(int);        // S8:   Função a ser completada pelos alunos (definida abaixo)
+void handleSignalSIGCHLD_S9(int);       // S9:   Função a ser completada pelos alunos (definida abaixo)
+int triggerSignals_SD10();              // SD10: Função a ser completada pelos alunos (definida abaixo)
+int validateRequest_SD11(Login);        // SD11: Função a ser completada pelos alunos (definida abaixo)
+int searchUserDB_SD12(Login);           // SD12: Função a ser completada pelos alunos (definida abaixo)
+int reserveUserDB_SD13(int, int);       // SD13: Função a ser completada pelos alunos (definida abaixo)
+int sendProductList_SD14(int, int);     // SD14: Função a ser completada pelos alunos (definida abaixo)
+MsgContent receiveClientOrder_SD15();   // SD15: Função a ser completada pelos alunos (definida abaixo)
+int sendPurchaseAck_SD16(int, int);     // SD16: Função a ser completada pelos alunos (definida abaixo)
+void shutdownAndExit_SD17();            // SD17: Função a ser completada pelos alunos (definida abaixo)
+void handleSignalSIGUSR1_SD18(int);     // SD18: Função a ser completada pelos alunos (definida abaixo)
 
 /**
  * Main: Processamento do processo Servidor e dos processos Servidor Dedicado
  *       Não é suposto que os alunos alterem nada na função main()
- * @return int Exit value
+ * @return int Exit value (RET_SUCCESS | RET_ERROR)
  */
 int main() {
-    // S1
-    so_exit_on_error(existsDB_S1(FILE_DATABASE), "S1");
-    // S2
-    so_exit_on_error(createFifo_S2(FILE_REQUESTS), "S2");
-    // S3
-    so_exit_on_error(triggerSignals_S3(FILE_REQUESTS), "S3");
-
+    if (    RET_ERROR == (shmId = initShm_S1()) ||
+            RET_ERROR == (msgId = initMsg_S2()) ||
+            RET_ERROR == (semId = initSem_S3()) ||
+            RET_ERROR == triggerSignals_S4()  ) {
+        shutdownAndExit_S7();
+    }
     while (TRUE) {  // O processamento do Servidor é cíclico e iterativo
-        // S4
-        clientRequest = readRequest_S4(FILE_REQUESTS);    // Convenciona-se que se houver problemas, esta função coloca clientRequest.nif = -1
-        if (clientRequest.nif < 0)
-            continue;   // Caso a leitura tenha tido problemas, não avança, e lê o próximo item
-        // S5
-        int pidFilho = createServidorDedicado_S5();
-        if (pidFilho < 0)
-            continue;   // Caso o fork() tenha tido problemas, não avança, e lê o próximo item
-        else if (pidFilho > 0) // Processo Servidor (Pai)
-            continue;   // Caso tudo tenha corrido bem, o PROCESSO PAI volta para S4
+        msg = receiveClientLogin_S5();    // Convenciona-se que se houver problemas, esta função coloca msg.msgData.infoLogin.nif = USER_NOT_FOUND
+        if (USER_NOT_FOUND == msg.msgData.infoLogin.nif)
+            continue;   // Caso a leitura tenha tido problemas, não avança, e lê o próximo pedido
 
-        // Este código é apenas corrido pelo Processo Servidor Dedicado (Filho)
-        // SD9
-        so_exit_on_error(triggerSignals_SD9(), "SD9");
-        // SD10
-        so_exit_on_error(validaPedido_SD10(clientRequest), "SD10");
-        // SD11
-        Login elementoClienteBD;
-        index_client = procuraUtilizadorBD_SD11(clientRequest, FILE_DATABASE, &elementoClienteBD);
-        // SD12
-        so_exit_on_error(reservaUtilizadorBD_SD12(&clientRequest, FILE_DATABASE, index_client, elementoClienteBD), "SD12");
-        // SD13
-        char nameFifoServidorDedicado[SIZE_FILENAME]; // Nome do FIFO do Servidor Dedicado
-        so_exit_on_error(createFifo_SD13(nameFifoServidorDedicado), "SD13");
-        // SD14
-        char nomeFifoCliente[SIZE_FILENAME];
-        so_exit_on_error(sendAckLogin_SD14(clientRequest, nomeFifoCliente), "SD14");
-        // SD15
-        so_exit_on_error(readFimSessao_SD15(nameFifoServidorDedicado), "SD15");
-        // SD16
-        so_exit_on_error(terminaSrvDedicado_SD16(&clientRequest, FILE_DATABASE, index_client), "SD16");
-        so_exit_on_error(-1, "ERRO: O servidor dedicado nunca devia chegar a este passo");
-        deleteFifoAndExit_SD17();
-        so_exit_on_error(-1, "ERRO: O servidor dedicado nunca devia chegar a este passo");
+        int pidFilho = createServidorDedicado_S6();
+        if (RET_ERROR == pidFilho)
+            shutdownAndExit_S7();            // Caso o fork() tenha tido problemas, termina
+        else if (PROCESSO_FILHO == pidFilho)
+            break;                           // Se for o PROCESSO FILHO, sai do ciclo
+    }                                        // Caso contrário, o PROCESSO PAI recomeça no passo S5
+
+    // Por exclusão de partes, este código é apenas corrido pelo PROCESSO Servidor Dedicado (FILHO)
+    if (    RET_ERROR == triggerSignals_SD10() ||
+            RET_ERROR == validateRequest_SD11(msg.msgData.infoLogin)) {
+        shutdownAndExit_SD17();
+    }
+    indexClient = searchUserDB_SD12(msg.msgData.infoLogin);
+    if (    USER_NOT_FOUND == indexClient ||
+            RET_ERROR == reserveUserDB_SD13(indexClient, msg.msgData.infoLogin.pidCliente) ||
+            RET_ERROR == sendProductList_SD14(indexClient, msg.msgData.infoLogin.pidCliente)) {
+        shutdownAndExit_SD17();
+    }
+    msg = receiveClientOrder_SD15();    // Convenciona-se que se houver problemas, esta função coloca msg.msgData.infoLogin.nif = USER_NOT_FOUND
+    if (USER_NOT_FOUND == msg.msgData.infoLogin.nif) {
+        shutdownAndExit_SD17();
+    }
+    sendPurchaseAck_SD16(msg.msgData.infoProduto.idProduto, msg.msgData.infoLogin.pidCliente);
+    shutdownAndExit_SD17();
+    so_exit_on_error(RET_ERROR, "ERRO: O servidor dedicado nunca devia chegar a este passo");
+    return RET_ERROR;
+}
+
+/******************************************************************************
+ * FUNÇÕES IPC SHARED MEMORY (cópia adaptada de /home/so/reference/shm-operations.c )
+ *****************************************************************************/
+
+/**
+ * @brief Internal Private Function, not to be used by the students.
+ */
+int __shmGet( int nrElements, int shmFlags ) {
+    int shmId = shmget( IPC_KEY, nrElements * sizeof(DadosServidor), shmFlags );
+    if ( shmId < 0 ) {
+        so_debug( "Could not create/open the Shared Memory with key=0x%x", IPC_KEY );
+    } else {
+        so_debug( "Using the Shared Memory with key=0x%x and id=%d", IPC_KEY, shmId );
+    }
+    return shmId;
+}
+
+/**
+ * @brief Creates an IPC Shared Memory exclusively, associated with the IPC_KEY, of an array of size multiple of sizeof(DadosServidor)
+ *
+ * @param nrElements Size of the array
+ * @return int shmId. In case of error, returns -1
+ */
+int shmCreate( int nrElements ) {
+    return __shmGet( nrElements, IPC_CREAT | IPC_EXCL | 0600 );
+}
+
+/**
+ * @brief Opens an already created IPC Shared Memory associated with the IPC_KEY
+ *
+ * @return int shmId. In case of error, returns -1
+ */
+int shmGet() {
+    return __shmGet( 0, 0 );
+}
+
+/**
+ * @brief Removes the IPC Shared Memory associated with the IPC_KEY
+ *
+ * @return int 0 if success or if the Shared Memory already did not exist, or -1 if the Shared Memory exists and could not be removed
+ */
+int shmRemove() {
+    int shmId = shmGet();
+    // Ignore any errors here, as this is only to check if the shared memory exists and remove it
+    if ( shmId > 0 ) {
+        // If the shared memory with IPC_KEY already exists, remove it
+        int result = shmctl( shmId, IPC_RMID, 0 );
+        if ( result < 0) {
+            so_debug( "Could not remove the Shared Memory with key=0x%x and id=%d", IPC_KEY, shmId );
+        } else {
+            so_debug( "Removed the Shared Memory with key=0x%x and id=%d", IPC_KEY, shmId );
+        }
+        return result;
+    }
+    return 0;
+}
+
+/**
+ * @brief Attaches a shared memory associated with shmId with a local address
+ *
+ * @param shmId Id of the Shared Memory
+ * @return DadosServidor*
+ */
+DadosServidor* shmAttach( int shmId ) {
+    DadosServidor* array = (DadosServidor*) shmat( shmId, 0, 0 );
+    if ( NULL == array ) {
+        so_debug( "Could not Attach the Shared Memory with id=%d", shmId );
+    } else {
+        so_debug( "The Shared Memory with id=%d was Attached on the local address %p", shmId, array );
+    }
+    return array;
+}
+
+/**
+ * @brief Função utilitária, fornecida pelos vossos queridos professores de SO... Utility to Display the values of the shared memory
+ *
+ * @param shm Shared Memory
+ * @param ignoreInvalid Do not display the elements that have the default value
+ */
+void shmView(DadosServidor* shm, int ignoreInvalid) {
+    so_debug("Conteúdo da SHM Users:");
+    for (int i = 0; i < MAX_USERS; ++i) {
+        if (!ignoreInvalid || USER_NOT_FOUND != shm->listUsers[i].nif) {
+            so_debug("Posição %2d: %9d | %-9s | %-24s | %3d | %2d | %2d", i, shm->listUsers[i].nif, shm->listUsers[i].senha, shm->listUsers[i].nome, shm->listUsers[i].saldo, shm->listUsers[i].pidCliente, shm->listUsers[i].pidServidorDedicado);
+        }
+    }
+    so_debug("Conteúdo da SHM Produtos:");
+    for (int i = 0; i < MAX_PRODUCTS; ++i) {
+        if (!ignoreInvalid || PRODUCT_NOT_FOUND != shm->listProducts[i].idProduto) {
+            so_debug("Posição %2d: %d | %-20s | %-7s | %d | %2d", i, shm->listProducts[i].idProduto, shm->listProducts[i].nomeProduto, shm->listProducts[i].categoria, shm->listProducts[i].preco, shm->listProducts[i].stock);
+        }
     }
 }
+
+/******************************************************************************
+ * FUNÇÕES IPC MESSAGE QUEUES (cópia de /home/so/reference/msg-operations.c )
+ *****************************************************************************/
+
+/**
+ * @brief Internal Private Function, not to be used by the students.
+ */
+int __msgGet( int msgFlags ) {
+    int msgId = msgget( IPC_KEY, msgFlags );
+    if ( msgId < 0 ) {
+        so_debug( "Could not create/open the Message Queue with key=0x%x", IPC_KEY );
+    } else {
+        so_debug( "Using the Message Queue with key=0x%x and id=%d", IPC_KEY, msgId );
+    }
+    return msgId;
+}
+
+/**
+ * @brief Creates an IPC Message Queue NON-exclusively, associated with the IPC_KEY, of an array of size multiple of sizeof(Aluno)
+ *
+ * @return int msgId. In case of error, returns -1
+ */
+int msgCreate() {
+    return __msgGet( IPC_CREAT | 0600 );
+}
+
+/**
+ * @brief Opens an already created IPC Message Queue associated with the IPC_KEY
+ *
+ * @return int msgId. In case of error, returns -1
+ */
+int msgGet() {
+    return __msgGet( 0 );
+}
+
+/**
+ * @brief Removes the IPC Message Queue associated with the IPC_KEY
+ *
+ * @param msgId IPC MsgID
+ * @return int 0 if success or if the Message Queue already did not exist, or -1 if the Message Queue exists and could not be removed
+ */
+int msgRemove( int msgId ) {
+    // Ignore any errors here, as this is only to check if the Message Queue exists and remove it
+    if ( msgId > 0 ) {
+        // If the Message Queue with IPC_KEY already exists, remove it
+        int result = msgctl( msgId, IPC_RMID, 0 );
+        if ( result < 0) {
+            so_debug( "Could not remove the Message Queue with key=0x%x and id=%d", IPC_KEY, msgId );
+        } else {
+            so_debug( "Removed the Message Queue with key=0x%x and id=%d", IPC_KEY, msgId );
+        }
+        return result;
+    }
+    return 0;
+}
+
+/**
+ * @brief Sends the passed message to the IPC Message Queue associated with the IPC_KEY
+ *
+ * @param msgId IPC MsgID
+ * @param msg Message to be sent
+ * @param msgType Message Type (or Address)
+ * @return int success
+ */
+int msgSend(int msgId, MsgContent msg, int msgType) {
+    msg.msgType = msgType;
+    int result = msgsnd(msgId, &msg, sizeof(msg.msgData), 0);
+    if (result < 0) {
+        so_debug( "Could not send the Message to the Message Queue with key=0x%x and id=%d", IPC_KEY, msgId );
+    } else {
+        so_debug( "Sent the Message to the Message Queue with key=0x%x and id=%d", IPC_KEY, msgId );
+    }
+    return result;
+}
+
+/**
+ * @brief Reads a message of the passed tipoMensagem from the IPC Message Queue associated with the IPC_KEY
+ *
+ * @param msgId IPC MsgID
+ * @param msg Pointer to the Message to be filled
+ * @param msgType Message Type (or Address)
+ * @return int Number of bytes read, or -1 in case of error
+ */
+int msgReceive(int msgId, MsgContent* msg, int msgType) {
+    int result = msgrcv(msgId, msg, sizeof(msg->msgData), msgType, 0);
+    if ( result < 0) {
+        so_debug( "Could not Receive the Message of Type %d from the Message Queue with key=0x%x and id=%d", msgType, IPC_KEY, msgId );
+    } else {
+        so_debug( "Received a Message of Type %d from the Message Queue with key=0x%x and id=%d, with %d bytes", msgType, IPC_KEY, msgId, result );
+    }
+    return result;
+}
+
+/******************************************************************************
+ * FUNÇÕES IPC SEMÁFOROS (cópia de /home/so/reference/sem-operations.c )
+ *****************************************************************************/
+
+/**
+ * @brief Internal Private Function, not to be used by the students.
+ */
+int __semGet( int nrSemaforos, int semFlags ) {
+    int semId = semget( IPC_KEY, nrSemaforos, semFlags );
+    if ( semId < 0 ) {
+        so_debug( "Could not create/open the Semaphores Group with key=0x%x", IPC_KEY );
+    } else {
+        so_debug( "Using the Semaphores Group with key=0x%x and id=%d", IPC_KEY, semId );
+    }
+    return semId;
+}
+
+/**
+ * @brief Creates an IPC Semaphores Group non-exclusively, associated with the IPC_KEY, with the passed number of Semaphores
+ *
+ * @param nrElements Number of Semaphores of the Group
+ * @return int semId. In case of error, returns -1
+ */
+int semCreate( int nrElements ) {
+    return __semGet( nrElements, IPC_CREAT | 0600 );
+}
+
+/**
+ * @brief Opens an already created IPC Semaphores Group associated with the IPC_KEY
+ *
+ * @return int semId. In case of error, returns -1
+ */
+int semGet() {
+    return __semGet( 0, 0 );
+}
+
+/**
+ * @brief Removes the IPC Semaphores Group associated with the IPC_KEY
+ *
+ * @param semId IPC SemId
+ * @return int 0 if success or if the Semaphores Group already did not exist, or -1 if the Semaphores Group exists and could not be removed
+ */
+int semRemove( int semId ) {
+    // Ignore any errors here, as this is only to check if the semaphore group exists and remove it
+    if ( semId > 0 ) {
+        // If the semaphore group with IPC_KEY already exists, remove it.
+        int result = semctl( semId, 0, IPC_RMID, 0 );
+        if ( result < 0) {
+            so_debug( "Could not remove the Semaphores Group with key=0x%x and id=%d", IPC_KEY, shmId );
+        } else {
+            so_debug( "Removed the Semaphores Group with key=0x%x and id=%d", IPC_KEY, shmId );
+        }
+        return result;
+    }
+    return 0;
+}
+
+/**
+ * @brief Sets the value of the Semaphore semNr of the Semaphore Group associated with IPC_KEY
+ *
+ * @param semId IPC SemId
+ * @param semNr Index of the Semaphore to set value (starting in 0)
+ * @param value Value to be defined in the Semaphore semNr
+ * @return int success
+ */
+int semNrSetValue( int semId, int semNr, int value ) {
+    int result = semctl( semId, semNr, SETVAL, value );
+    if ( result < 0) {
+        so_debug( "Could not set the value of the Semaphore %d of this Semaphore Group", semNr );
+    } else {
+        so_debug( "The Semaphore %d of this Semaphore Group was set with value %d", semNr, value );
+    }
+    return result;
+}
+
+/**
+ * @brief Sets the value of the Semaphore 0 of the Semaphore Group associated with IPC_KEY
+ *
+ * @param semId IPC SemId
+ * @param value Value to be defined in the Semaphore semNr
+ * @return int success
+ */
+int semSetValue( int semId, int value ) {
+    return semNrSetValue( semId, 0, value );
+}
+
+/**
+ * @brief Gets the value of the Semaphore semNr of the Semaphore Group associated with IPC_KEY
+ *
+ * @param semId IPC SemId
+ * @param semNr Index of the Semaphore to set value (starting in 0)
+ * @return int Value of the Semaphore, or -1 in case of error
+ */
+int semNrGetValue( int semId, int semNr ) {
+    int result = semctl( semId, semNr, GETVAL, 0 );
+    if ( result < 0 ) {
+        so_debug( "Could not get the value of the Semaphore %d of this Semaphore Group", semNr );
+    } else {
+        so_debug( "The Semaphore %d of this Semaphore Group has the value %d", semNr, result );
+    }
+    return result;
+}
+
+/**
+ * @brief Gets the value of the Semaphore 0 of the Semaphore Group associated with IPC_KEY
+ *
+ * @param semId IPC SemId
+ * @return int Value of the Semaphore, or -1 in case of error
+ */
+int semGetValue( int semId ) {
+    return semNrGetValue( semId, 0 );
+}
+
+/**
+ * @brief Adds a value to the current value the Semaphore semNr of the Semaphore Group associated with IPC_KEY
+ *
+ * @param semId IPC SemId
+ * @param semNr Index of the Semaphore to set value (starting in 0)
+ * @param value Value to be added to the value of the Semaphore semNr
+ * @return int success
+ */
+int semNrAddValue( int semId, int semNr, int addValue ) {
+    int result = semctl( semId, semNr, GETVAL, 0 );
+    so_exit_on_error( result, "Error on semctl" );
+    so_debug( "The Semaphore %d of this Semaphore Group had the value %d", semNr, result );
+
+    struct sembuf operation = { semNr, addValue, 0 };
+    result = semop( semId, &operation, 1 );
+
+    if ( result < 0 ) {
+        so_debug( "Could not add the value %d to the value of the Semaphore %d of this Semaphore Group", addValue, semNr );
+    } else {
+        result = semctl( semId, semNr, GETVAL, 0 );
+        so_exit_on_error( result, "Error on semctl" );
+        so_debug( "The Semaphore %d of this Semaphore Group now has the value %d", semNr, result );
+    }
+    return result;
+}
+
+/**
+ * @brief Adds a value to the current value the Semaphore 0 of the Semaphore Group associated with IPC_KEY
+ *
+ * @param semId IPC SemId
+ * @param value Value to be added to the value of the Semaphore semNr
+ * @return int success
+ */
+int semAddValue( int semId, int addValue ) {
+    return semNrAddValue( semId, 0, addValue );
+}
+
+/**
+ * @brief Adds 1 (one) to the current value the Semaphore semNr of the Semaphore Group associated with IPC_KEY
+ *
+ * @param semId IPC SemId
+ * @param semNr Index of the Semaphore to set value (starting in 0)
+ * @return int success
+ */
+int semNrUp( int semId, int semNr ) {
+    return semNrAddValue( semId, semNr, 1 );
+}
+
+/**
+ * @brief Adds -1 (minus one) to the current value the Semaphore semNr of the Semaphore Group associated with IPC_KEY
+ *
+ * @param semId IPC SemId
+ * @param semNr Index of the Semaphore to set value (starting in 0)
+ * @return int success
+ */
+int semNrDown( int semId, int semNr ) {
+    return semNrAddValue( semId, semNr, -1 );
+}
+
+/**
+ * @brief Adds 1 (one) to the current value the Semaphore 0 of the Semaphore Group associated with IPC_KEY
+ *
+ * @param semId IPC SemId
+ * @return int success
+ */
+int semUp( int semId ) {
+    return semAddValue( semId, 1 );
+}
+
+/**
+ * @brief Adds -1 (minus one) to the current value the Semaphore 0 of the Semaphore Group associated with IPC_KEY
+ *
+ * @param semId IPC SemId
+ * @return int success
+ */
+int semDown( int semId ) {
+    return semAddValue( semId, -1 );
+}
+
+/******************************************************************************
+ * MÓDULO SERVIDOR
+ *****************************************************************************/
 
 /**
  *  O módulo Servidor é responsável pelo processamento das autenticações dos utilizadores.
@@ -99,280 +477,423 @@ int main() {
  */
 
 /**
- * @brief S1    Valida se o ficheiro nameDB existe na diretoria local, dá so_error
- *              (i.e., so_error("S1", "")) e termina o Servidor se o ficheiro não existir.
- *              Caso contrário, dá so_success (i.e., so_success("S1", ""));
+ * @brief S1    Abre/Cria a Shared Memory (SHM) do projeto, que tem a KEY IPC_KEY definida em
+ *              common.h (alterar esta KEY para ter o valor do nº do aluno, como indicado nas
+ *              aulas), realizando as seguintes operações:
+ *        S1.1  Tenta abrir a Shared Memory (SHM) IPC com a referida KEY IPC_KEY. Em caso de
+ *              sucesso na abertura da SHM, liga a variável db a essa SHM. Se não encontrar nenhum
+ *              erro, dá so_success <shmId> (i.e., so_success("S1.1", "%d", shmId)), e retorna o ID
+ *              da SHM (vai para S2). Caso contrário, dá so_error, (i.e., so_error("S1.1", "")).
+ *        S1.2  Valida se o erro anterior foi devido a não existir ainda nenhuma SHM criada com
+ *              essa KEY (testando o valor da variável errno). Se o problema não foi esse (mas
+ *              outro qualquer), então dá so_error e retorna erro (vai para S7). Caso contrário
+ *              (o problema foi não haver SHM criada), dá so_success.
+ *        S1.3  Cria uma Shared Memory com a KEY IPC_KEY definida em common.h e com o tamanho para
+ *              conter as duas listas do Servidor: uma de utilizadores (Login), que comporta um
+ *              máximo de MAX_USERS elementos, e outra de produtos (Produto), que comporta um
+ *              máximo de MAX_PRODUCTS elementos. Em caso de erro, dá so_error e retorna erro
+ *              (vai para S7). Senão, dá so_success <shmId>.
+ *        S1.4  Inicia a Lista de Utilizadores, preenchendo em todos os elementos o campo
+ *              nif=USER_NOT_FOUND (“Limpa” a lista de utilizadores), e a Lista de Produtos,
+ *              preenchendo em todos os elementos o campo idProduto=PRODUCT_NOT_FOUND (“Limpa” a
+ *              lista de produtos). No final, dá so_success.
+ *        S1.5  Lê o ficheiro FILE_DATABASE_USERS e preenche a lista de utilizadores na memória
+ *              partilhada com a informação dos utilizadores, mas preenchendo sempre os campos
+ *              pidCliente e pidServidorDedicado com o valor -1. Em caso de qualquer erro, dá
+ *              so_error e retorna erro (vai para S7). Caso contrário, dá so_success.
+ *        S1.6  Lê o ficheiro FILE_DATABASE_PRODUCTS e preenche a lista de produtos na memória
+ *              partilhada com a informação dos produtos. Em caso de qualquer erro, dá so_error e
+ *              retorna erro (vai para S7). Caso contrário, dá so_success e retorna o ID da SHM.
  *
- * @param nameDB O nome da base de dados (i.e., FILE_DATABASE)
- * @return int Sucesso (0: success, -1: error)
+ * @return int RET_ERROR em caso de erro, ou a shmId em caso de sucesso
  */
-int existsDB_S1(char *nameDB) {
-    int result = -1;    // Por omissão retorna erro
-    so_debug("< [@param nameDB:%s]", nameDB);
-    
-    if (access(nameDB, F_OK) == 0){
-        result = 0;
-        so_success("S1", "");
-    }
-    else {
-        so_error("S1", ""); 
-    }
-    so_debug("> [@return:%d]", result);
-    return result;
-}
-
-/**
- * @brief S2    Cria o ficheiro com organização FIFO (named pipe) do Servidor, de nome
- *              nameFifo, na diretoria local. Se houver erro na operação, dá so_error e
- *              termina o Servidor. Caso contrário, dá  so_success;
- *
- * @param nameFifo O nome do FIFO do servidor (i.e., FILE_REQUESTS)
- * @return int Sucesso (0: success, -1: error)
- */
-int createFifo_S2(char *nameFifo) {
-    int result = -1;    // Por omissão retorna erro
-    so_debug("< [@param nameFifo:%s]", nameFifo);
-    
-    
-    result = mkfifo(nameFifo,0666);
-    if (result == 0) {    
-        so_success("S2", "");
-    }
-    else {
-        so_error("S2", "");
-    }
-    so_debug("> [@return:%d]", result);
-    return result;
-
-}
-
-/**
- * @brief S3    Arma e trata os sinais SIGINT (ver S7) e SIGCHLD (ver S8). Em caso de qualquer
- *              erro a armar os sinais, dá so_error e segue para o passo S6.
- *              Caso contrário, dá so_success;
- *
- * @return int Sucesso (0: success, -1: error)
- */
-int triggerSignals_S3() {
-    int result = -1;    // Por omissão retorna erro
+int initShm_S1() {
+    int result = RET_ERROR;    // Por omissão retorna erro
     so_debug("<");
-  
-    if ((signal(SIGINT, trataSinalSIGINT_S7) != SIG_ERR) && (signal(SIGCHLD, trataSinalSIGCHLD_S8) != SIG_ERR)) {
-        result = 0;
-        so_success("S3","");
-    } else {
-        deleteFifoAndExit_S6();
-        so_error("S3","");
+
+  //S1.1
+    shmId = shmget( IPC_KEY, sizeof(DadosServidor), 0 );
+    if ( shmId< 0 ) {
+       so_error("S1.1", "");
+    }
+    else {
+        db = shmat(shmId, NULL, 0);
+        if ( db == NULL ) {
+            so_error("S1.1", "");   
+        }
+        else {
+            so_success("S1.1", "%d", shmId);
+            return shmId;
+        }
+    }
+
+    //S1.2
+    if ( errno == ENOENT ) { 
+       so_success("S1.2", "");
+    }
+    else {
+        so_error("S1.2", "");
+        return RET_ERROR;
+    }
+
+    //S1.3
+    shmId = shmget(  IPC_KEY, sizeof(DadosServidor) , IPC_CREAT | 0666 );
+    if ( shmId < 0){
+        so_error("S1.3", "");
+    }
+    else {
+        db = shmat(shmId, NULL, 0);
+        if ( db == NULL ) {
+            so_error("S1.3", "");  
+        }
+        else {
+            so_success("S1.3", "%d", shmId);
+        }
+    }
+
+    //S1.4
+    for( int i = 0; i < MAX_USERS; i++) {
+           db->listUsers[i].nif = USER_NOT_FOUND;
+        }
+    for( int i = 0; i < MAX_PRODUCTS; i++) {
+            db->listProducts[i].idProduto = PRODUCT_NOT_FOUND;
+        }
+    so_success("S1.4", "");
+
+    //S1.5
+    FILE *utilizadores = fopen(FILE_DATABASE_USERS, "r");
+    
+    if (utilizadores == NULL){
+        so_error("S1.5","");
+        return RET_ERROR;
+    }
+    else {
+        for(int i = 0; i < MAX_USERS; i++){ 
+            if (fread(&(db->listUsers[i]), sizeof(Login), 1, utilizadores) < 0) { 
+                so_error("S1.5","");
+                return RET_ERROR;
+            }
+            db->listUsers[i].pidCliente = -1;
+            db->listUsers[i].pidServidorDedicado = -1;
+        }
+    so_success("S1.5", "");
+    fclose(utilizadores);
+    }
+    
+
+    //S1.6
+    FILE *produtos = fopen(FILE_DATABASE_PRODUCTS, "r");
+    
+    if (produtos == NULL){
+        so_error("S1.6","");
+        return RET_ERROR;
+    }
+    else {
+        for(int i = 0; i < MAX_PRODUCTS; i++){ 
+            if (fread(&(db->listProducts[i]), sizeof(Produto), 1, produtos) < 0) { 
+                so_error("S1.6","");
+                return RET_ERROR;
+            }
+        }    
+    so_success("S1.6", "");
+    fclose(produtos);
+    return shmId;
+    }
+    
+
+    so_debug("> [@return:%d]", result);
+    return result;
+}
+
+/**
+ * @brief S2    Cria a Message Queue (MSG) do projeto, que tem a KEY IPC_KEY, realizando as
+ *              seguintes operações:
+ *        S2.1  Se já existir, deve apagar a fila de mensagens. Em caso de qualquer erro, dá
+ *              so_error e retorna erro (vai para S7). Caso contrário, dá so_success.
+ *        S2.2  Cria a Message Queue com a KEY IPC_KEY. Em caso de erro, dá so_error e retorna
+ *              erro (vai para S7). Caso contrário, dá so_success <msgId> e retorna o ID da MSG.
+ *
+ * @return int RET_ERROR em caso de erro, ou a msgId em caso de sucesso
+ */
+int initMsg_S2() {
+    int result = RET_ERROR;    // Por omissão retorna erro
+    so_debug("<");
+
+//S2.1
+
+    msgId = msgget(IPC_KEY, 0);
+    if (msgId > 0) {
+        if (msgctl(msgId, IPC_RMID, NULL) < 0) {
+            so_error("S2.1", "nao apagou");
+            return RET_ERROR;
+        }  
+    }
+
+    so_success("S2.1", "nao existe");
+    
+    //S2.2
+    if ( (msgId = msgget(IPC_KEY, IPC_CREAT | 0666)) == -1 ){
+        so_error("S2.2", "");
+        return RET_ERROR;
+    }
+    else {
+        so_success("S2.2", "%d", msgId);
+        return msgId;
     }
     so_debug("> [@return:%d]", result);
     return result;
 }
 
 /**
- * @brief S4    Abre o FIFO do Servidor para leitura, lê um pedido (acesso direto) que deverá
- *              ser um elemento do tipo Login, e fecha o mesmo FIFO. Se houver erro, dá so_error
- *              e reinicia o processo neste mesmo passo S4, lendo um novo pedido.
- *              Caso contrário, dá so_success <nif> <senha> <pid_cliente>;
- *              Convenciona-se que se houver problemas, esta função retorna request.nif = -1;
+ * @brief S3    Cria um grupo de semáforos (SEM) que tem a KEY IPC_KEY, realizando as seguintes
+ *              operações:
+ *        S3.1  Se já existir, deve apagar o grupo de semáforos. Em caso de qualquer erro, dá
+ *              so_error e retorna erro (vai para S7). Caso contrário, dá so_success.
+ *        S3.2  Cria um grupo de três semáforos com a KEY IPC_KEY. Em caso de qualquer erro, dá
+ *              so_error e retorna erro (vai para S7). Caso contrário, dá so_success <semId>.
+ *        S3.3  Inicia o valor dos semáforos SEM_USERS e SEM_PRODUCTS para que possam trabalhar em
+ *              modo “exclusão mútua”, e inicia o valor do semáforo SEM_NR_SRV_DEDICADOS com o
+ *              valor 0. Em caso de erro, dá so_error e retorna erro (vai para S7).
+ *              Caso contrário, dá so_success e retorna o ID do SEM.
  *
- * @param nameFifo O nome do FIFO do servidor (i.e., FILE_REQUESTS)
- * @return Login Elemento com os dados preenchidos. Se nif=-1, significa que o elemento é inválido
+ * @return int RET_ERROR em caso de erro, ou a semId em caso de sucesso
  */
-Login readRequest_S4(char *nameFifo) {
-    Login request;
-    request.nif = -1;   // Por omissão retorna erro
-    so_debug("< [@param nameFifo:%s]", nameFifo);
+int initSem_S3() {
+    int result = RET_ERROR;    // Por omissão retorna erro
+    so_debug("<"); 
 
-    FILE *ler = fopen(nameFifo,"r+");
+    semId = semget(IPC_KEY, 1, 0 );
+    //S3.1
+    if ( semId > 0 ) {
+        if (semctl(semId, 0, IPC_RMID) < 0) {
+            so_error("S3.1", "erro ao apagar");
+            return RET_ERROR;
+        }     
+    }
+    
+    so_success("S3.1", "apagado");
+    //S3.2
+    semId =  semget(IPC_KEY, 3, IPC_CREAT | 0666);
+    if (semId < 0) {
+        so_error("S3.2", "");
+        return RET_ERROR;
+    }
+    else {
+        so_success("S3.2", "%d", semId);
+    }
+    
+    //S3.3
+    if (semctl(semId, 0, SETVAL, 1) == -1 || semctl(semId, 1, SETVAL, 1) == -1 || semctl(semId, 2, SETVAL, 0) == -1 ) {
+        so_error("S3.3", "");
+        return RET_ERROR;
+    }
+    else {
+        so_success("S3.3", "");
+        return semId;
+    }
+    so_debug("> [@return:%d]", result);
+    return result;
+}
 
-    if (ler != NULL) {
+/**
+ * @brief S4    Arma e trata os sinais SIGINT (ver S8) e SIGCHLD (ver S9). Em caso de qualquer
+ *              erro a armar os sinais, dá so_error e retorna erro (vai para S7).
+ *              Caso contrário, dá so_success e retorna sucesso.
+ *
+ * @return int Sucesso (RET_SUCCESS | RET_ERROR)
+ */
+int triggerSignals_S4() {
+    int result = RET_ERROR;    // Por omissão retorna erro
+    so_debug("<");
 
-        //se conseguir ler um Login, faz o resto
-        if (fread(&request, sizeof(Login), 1, ler)) {
-            so_success("S4","%d %s %d", request.nif, request.senha, request.pid_cliente);
-            fclose(ler);
-
-        } else 
-            so_error("S4", "");
-            
-        
-
+    if ((signal(SIGINT, handleSignalSIGINT_S8) != SIG_ERR) && (signal(SIGCHLD, handleSignalSIGCHLD_S9) != SIG_ERR)) {
+        so_success("S4","");
+        return RET_SUCCESS;
     } else {
         so_error("S4","");
-        
     }
-    
-
-    so_debug("> [@return nif:%d, senha:%s, pid_cliente:%d]", request.nif, request.senha, request.pid_cliente);
-    return request;
+    so_debug("> [@return:%d]", result);
+    return result;
 }
 
 /**
- * @brief S5    Cria um processo filho (fork) Servidor Dedicado. Se houver erro, dá so_error.
- *              Caso contrário, o processo Servidor Dedicado (filho) continua no passo SD9,
- *              enquanto o processo Servidor (pai) dá
- *              so_success "Servidor Dedicado: PID <pid_servidor_dedicado>",
- *              e recomeça o processo no passo S4;
+ * @brief S5    Lê da Message Queue um pedido, ou seja, uma mensagem do tipo MSGTYPE_LOGIN. Se
+ *              houver erro, dá so_error e retorna erro (reinicia o processo neste mesmo passo S5,
+ *              lendo um novo pedido). Caso contrário, dá so_success <nif> <senha> <pidCliente>.
+ *
+ * @return MsgContent Elemento com os dados preenchidos. Se nif==USER_NOT_FOUND, significa que o elemento é inválido
+ */
+MsgContent receiveClientLogin_S5() {
+    MsgContent msg;
+    msg.msgData.infoLogin.nif = USER_NOT_FOUND;   // Por omissão retorna erro
+    so_debug("<");
+
+    ssize_t size = msgrcv(msgId, &msg, sizeof(msg.msgData), MSGTYPE_LOGIN, 0);
+    if ( size < 0 ) {
+        so_error("S5", "bad message received");
+        return msg;
+    }
+    else {
+        so_success("S5", "%d %s %d", msg.msgData.infoLogin.nif, msg.msgData.infoLogin.senha, msg.msgData.infoLogin.pidCliente);
+    }
+
+    so_debug("> [@return nif:%d, senha:%s, pidCliente:%d]", msg.msgData.infoLogin.nif,
+                        msg.msgData.infoLogin.senha, msg.msgData.infoLogin.pidCliente);
+    return msg;
+}
+
+/**
+ * @brief S6    Cria um processo filho (fork) Servidor Dedicado. Se houver erro, dá so_error e
+ *              retorna erro (vai para S7). Caso contrário, o processo Servidor Dedicado (filho)
+ *              continua no passo SD10, enquanto o processo Servidor (pai) dá so_success "Servidor
+ *              Dedicado: PID <pidServidorDedicado>",
+ *              e retorna o PID do novo processo Servidor Dedicado (recomeça no passo S5).
  *
  * @return int PID do processo filho, se for o processo Servidor (pai),
- *         0 se for o processo Servidor Dedicado (filho), ou -1 em caso de erro.
+ *             PROCESSO_FILHO se for o processo Servidor Dedicado (filho),
+ *             ou RET_ERROR em caso de erro.
  */
-int createServidorDedicado_S5() {
-    int pid_filho = -1;    // Por omissão retorna erro
+int createServidorDedicado_S6() {
+    int pid_filho = RET_ERROR;    // Por omissão retorna erro
     so_debug("<");
 
     pid_filho = fork();
    
-    if (pid_filho < 0) 
-        so_error("S5", "");
-    
-    else { 
-        if (pid_filho == 0){
-            triggerSignals_SD9();
-        }
-        else {
-            so_success("S5","Servidor Dedicado: PID %d", pid_filho);
-        }
+    if (pid_filho < 0) {
+        so_error("S6", "");
+        return RET_ERROR;
     }
-    
+    else { 
+        if (pid_filho != 0)
+            so_success("S6","Servidor Dedicado: PID %d", pid_filho);
+    }
+
+    // ++nrServidoresDedicados;    // Incrementa o Número de Servidores Dedicados criados
     so_debug("> [@return:%d]", pid_filho);
     return pid_filho;
-}  
+}
 
 /**
- * @brief S6    Remove o FIFO do Servidor, de nome FILE_REQUESTS, da diretoria local.
- *              Em caso de erro, dá so_error, caso contrário, dá so_success.
- *              Em ambos os casos, termina o processo Servidor.
+ * @brief S7    Passo terminal para fechar o Servidor: dá so_success "Shutdown Servidor", e faz as
+ *              seguintes ações:
+ *        S7.1  Verifica se existe SHM aberta e alocada. Se não existir, dá so_error e passa para
+ *              o passo S7.5, caso contrário, dá so_success.
+ *        S7.2  Percorre a lista de utilizadores. A cada utilizador que tenha um Servidor Dedicado
+ *              associado (significando que está num processo de compra de produtos), envia ao PID
+ *              desse Servidor Dedicado o sinal SIGUSR1. Quando tiver processado todos os
+ *              utilizadores existentes, dá so_success.
+ *        S7.3  Dá so_success.
+ *        S7.4  Reescreve o ficheiro bd_produtos.dat, mas incluindo apenas os produtos existentes
+ *              na lista de produtos que tenham stock > 0. Em caso de qualquer erro, dá so_error.
+ *              Caso contrário, dá so_success.
+ *        S7.5  Apaga todos os elementos IPC (SHM, SEM e MSG) que tenham sido criados pelo Servidor
+ *              com a KEY IPC_KEY. Em caso de qualquer erro, dá so_error. Caso contrário, dá
+ *              so_success.
+ *        S7.6  Termina o processo Servidor.
  */
-void deleteFifoAndExit_S6() {
+void shutdownAndExit_S7() {
     so_debug("<");
 
+    //S7
+    so_success("S7", "Shutdown Servidor");
+    //S7.1
+    if ( shmId < 0 ) {
+        so_error("S7.1", "nao existe shm");
+    } 
+    else { //S7.2
+        so_success("S7.1", "");
+        for(int i = 0; i < MAX_USERS; i++){
+            int pidSD = db->listUsers[i].pidServidorDedicado;
+            if (pidSD > 0) { // se o user tiver um Servidor Dedicado associado
+                kill(pidSD, SIGUSR1);// envia sinal SIGUSR1 para Servidor Dedicado
+            }
+        }
+        so_success("S7.2", "");
+    
+   //S7.3
+    so_success("S7.3","");
 
-    if (unlink(FILE_REQUESTS)!=0)
-        so_error("S6", "");
-    else
-        so_success("S6", "");
+    //S7.4
+   FILE *produtos = fopen(FILE_DATABASE_PRODUCTS, "w");
+    
+    if (produtos == NULL){
+        so_error("S7.4","");
+    }
+    else{
+        for(int i = 0; i < MAX_PRODUCTS; i++){ 
+        if (db->listProducts[i].stock > 0)
+            fwrite(&(db->listProducts[i]), sizeof(Produto), 1, produtos);
+        }
+        so_success("S7.4", "");
+    }
+    fclose(produtos);
+    }
 
+    //S7.5
+    if ( semId < 0 || msgId < 0 || shmId < 0 ) {
+        so_error("S7,5", "erro ");
+    } else {
+        if ( semctl( semId, 0, IPC_RMID ) == -1 || msgctl( msgId, IPC_RMID, NULL ) < 0 || shmctl( shmId, IPC_RMID, NULL ) == -1) {
+            so_error("S7,5", "");
+        }
+        else 
+            so_success("S7.5", "");
+    }
+   
+    // S7.6  Termina o processo Servidor.
     so_debug(">");
-    exit(0);
+    exit(RET_SUCCESS);
 }
 
 /**
- * @brief S7    O sinal armado SIGINT serve para o dono da loja encerrar o Servidor, usando o
+ * @brief S8    O sinal armado SIGINT serve para o dono da loja encerrar o Servidor, usando o
  *              atalho <CTRL+C>. Se receber esse sinal (do utilizador via Shell), o Servidor dá
- *              so_success "Shutdown Servidor", e faz as ações:
- *        S7.1  Abre o ficheiro bd_utilizadores.dat para leitura. Em caso de erro na abertura do
- *              ficheiro, dá so_error e segue para o passo S6. Caso contrário, dá so_success;
- *        S7.2  Lê (acesso direto) um elemento do tipo Login deste ficheiro. Em caso de erro na
- *              leitura do ficheiro, dá so_error e segue para o passo S6;
- *        S7.3  Se o elemento Login lido tiver pid_servidor_dedicado > 0, então envia ao PID
- *              desse Servidor Dedicado o sinal SIGUSR1;
- *        S7.4  Se tiver chegado ao fim do ficheiro bd_utilizadores.dat, fecha o ficheiro e dá
- *              so_success. Caso contrário, volta ao passo S7.2;
- *        S7.5  Vai para o passo S6.
+ *              so_success, e vai para o passo terminal S7.
  *
  * @param sinalRecebido nº do Sinal Recebido (preenchido pelo SO)
  */
-void trataSinalSIGINT_S7(int sinalRecebido) {
+void handleSignalSIGINT_S8(int sinalRecebido) {
     so_debug("< [@param sinalRecebido:%d]", sinalRecebido);
 
-    so_success("S7","Shutdown Servidor");
-    
+    so_success("S8", "");
+    shutdownAndExit_S7();
 
-    //S7.1 
-    
-        FILE *utilizadores = fopen("bd_utilizadores.dat", "r+");
-    
-        if (utilizadores){
-            so_success("S7.1","");
-        }
-        else {
-            so_error("S7.1","");
-            deleteFifoAndExit_S6();
-        }
-
-        Login request;
-        while(feof(utilizadores) == 0){ //S7.4 se nao tiver chegado ao fim do ficheiro, volta ao passo S7.2
-            if (fread(&request, sizeof(Login), 1, utilizadores) < 0) { //S7.2
-                so_error("S7.2","");
-                deleteFifoAndExit_S6();
-            }
-    
-            //S7.3
-            if (request.pid_servidor_dedicado > 0)
-                kill(request.pid_servidor_dedicado, SIGUSR1);
-        }
-        so_success("S7.4","");
-        fclose(utilizadores);
-    
-        //S7.5
-        deleteFifoAndExit_S6();
-        so_success("S7","");
-
-        so_debug(">");
-        exit(0);
-   
-   
-   
+    so_debug(">");
 }
+
 /**
- * @brief S8    O sinal armado SIGCHLD serve para que o Servidor seja alertado quando um dos
- *              seus filhos Servidor Dedicado terminar. Se o Servidor receber esse sinal,
- *              identifica o PID do Servidor Dedicado que terminou (usando wait), e dá
- *              so_success "Terminou Servidor Dedicado <pid_servidor_dedicado>", retornando ao
- *              passo S4 sem reportar erro;
+ * @brief S9    O sinal armado SIGCHLD serve para que o Servidor seja alertado quando um dos seus
+ *              filhos Servidor Dedicado terminar. Se o Servidor receber esse sinal, identifica o
+ *              PID do Servidor Dedicado que terminou (usando wait), dá so_success "Terminou
+ *              Servidor Dedicado <pidServidorDedicado>", retornando ao que estava a fazer
+ *              anteriormente.
  *
  * @param sinalRecebido nº do Sinal Recebido (preenchido pelo SO)
  */
-void trataSinalSIGCHLD_S8(int sinalRecebido) {
+void handleSignalSIGCHLD_S9(int sinalRecebido) {
     so_debug("< [@param sinalRecebido:%d]", sinalRecebido);
 
     int pid_filho = wait(NULL);
-    so_success("S8", "Terminou Servidor Dedicado %d", pid_filho);
-       
-       
+    so_success("S9", "Terminou Servidor Dedicado %d", pid_filho);
 
     so_debug(">");
 }
 
 /**
- * @brief SD9   O novo processo Servidor Dedicado (filho) arma os sinais SIGUSR1 (ver SD18) e
- *              SIGINT (programa-o para ignorar este sinal). Em caso de erro a armar os sinais,
- *              dá so_error e termina o Servidor Dedicado. Caso contrário, dá so_success;
+ * @brief SD10      O novo processo Servidor Dedicado (filho) arma os sinais SIGUSR1 (ver SD18) e
+ *                  SIGINT (programa-o para ignorar este sinal). Em caso de erro a armar os sinais,
+ *                  dá so_error e retorna erro (vai para SD17). Caso contrário, dá so_success.
  *
- * @return int Sucesso (0: success, -1: error)
+ * @return int Sucesso (RET_SUCCESS | RET_ERROR)
  */
-int triggerSignals_SD9() {
-    int result = -1;    // Por omissão retorna erro
+int triggerSignals_SD10() {
+    int result = RET_ERROR;    // Por omissão retorna erro
     so_debug("<");
 
-    if ((signal(SIGUSR1,trataSinalSIGUSR1_SD18) != SIG_ERR) && (signal(SIGINT,SIG_IGN) != SIG_ERR)) {
-        so_success("SD9","");
-        result = 0;
-    } else {
-        so_error("SD9","");
-    }
-    so_debug("> [@return:%d]", result);
-    return result;
-}
-
-/**
- * @brief SD10  O Servidor Dedicado deve validar, em primeiro lugar, no pedido Login recebido do
- *              Cliente (herdado do processo Servidor pai), se o campo pid_cliente > 0. Se for,
- *              dá so_success, caso contrário dá so_error e termina o Servidor Dedicado;
- *
- * @param request Pedido de Login que foi enviado pelo Cliente.
- * @return int Sucesso (0: success, -1: error)
- */
-int validaPedido_SD10(Login request) {
-    int result = -1;    // Por omissão retorna erro
-    so_debug("< [@param request.nif:%d, request.senha:%s, request.pid_cliente:%d]", request.nif,  request.senha, request.pid_cliente);
-
-    if (request.pid_cliente > 0){
+     if ((signal(SIGUSR1,handleSignalSIGUSR1_SD18) != SIG_ERR) && (signal(SIGINT,SIG_IGN) != SIG_ERR)) {
         so_success("SD10","");
-        result = 0;
-    }
-    else {
+        result = RET_SUCCESS;
+    } else {
         so_error("SD10","");
     }
 
@@ -381,382 +902,303 @@ int validaPedido_SD10(Login request) {
 }
 
 /**
- * @brief SD11      Abre o ficheiro nameDB para leitura. Em caso de erro na
- *                  abertura do ficheiro, dá so_error e termina o Servidor Dedicado.
- *                  Caso contrário, dá so_success, e faz as seguintes operações:
- *        SD11.1    Inicia uma variável index_client com o índice (inteiro) do elemento Login
- *                  corrente lido do ficheiro. Para simplificar, pode considerar que este
- *                  ficheiro nunca terá nem mais nem menos elementos;
- *        SD11.2    Se já chegou ao final do ficheiro nameDB sem encontrar o
- *                  cliente, coloca index_client=-1, dá so_error, fecha o ficheiro,
- *                  e segue para o passo SD12;
- *        SD11.3    Caso contrário, lê (acesso direto) um elemento Login do ficheiro e
- *                  incrementa a variável index_client. Em caso de1request.nif ==  erro na leitura do ficheiro,
- *                  dá so_error e termina o Servidor Dedicado;
- *        SD11.4    Valida se o NIF passado no pedido do Cliente corresponde ao NIF do elemento
- *                  Login do ficheiro. Se não corresponder, então reinicia ao passo SD11.2;
- *        SD11.5    Se, pelo contrário, os NIFs correspondem, valida se a Senha passada no
- *                  pedido do Cliente bate certo com a Senha desse mesmo elemento Login do
- *                  ficheiro. Caso isso seja verdade, então dá  so_success <index_client>.
- *                  Caso contrário, dá so_error e coloca index_client=-1;
- *        SD11.6    Termina a pesquisa, e fecha o ficheiro nameDB.
+ * @brief SD11      O Servidor Dedicado deve validar, em primeiro lugar, no pedido Login recebido
+ *                  do Cliente (herdado do processo Servidor pai), se o campo pidCliente > 0.
+ *                  Se for, dá so_success e retorna sucesso.
+ *                  Caso contrário, dá so_error e retorna erro (vai para SD17).
  *
- * @param request O pedido do cliente
- * @param nameDB O nome da base de dados
- * @param itemDB O endereço de estrutura Login a ser preenchida nesta função com o elemento da BD
- * @return int Em caso de sucesso, retorna o índice de itemDB no ficheiro nameDB.
- *             Caso contrário retorna -1
+ * @param request Pedido de Login que foi enviado pelo Cliente.
+ * @return int Sucesso (RET_SUCCESS | RET_ERROR)
  */
-int procuraUtilizadorBD_SD11(Login request, char *nameDB, Login *itemDB) {
-    int index_client = -1;    // SD11.1: Por omissão retorna erro
-    so_debug("< [@param request.nif:%d, request.senha:%s, nameDB:%s, itemDB:%p]", request.nif, request.senha, nameDB, itemDB);
+int validateRequest_SD11(Login request) {
+    int result = RET_ERROR;    // Por omissão retorna erro
+    so_debug("< [@param request.nif:%d, request.senha:%s, request.pidCliente:%d]", request.nif,
+                                                            request.senha, request.pidCliente);
 
-    //SD11
-    FILE *db = fopen(nameDB, "r+");
-
-    if (db)
-        so_success("SD11", "");
-    else {
-        fclose(db);
-        so_error("SD11", "");
-    } 
-    
-    
-   
-    ///SD11.2
-    for(index_client = 0 ; !feof(db); index_client++){
-        so_debug("teste");  
-        if (fread(itemDB, sizeof(Login), 1, db) < 0) { //SD11.3
-            so_debug("teste1");
-            fclose(db);
-            so_error("SD11.3","");
-        }
-        so_debug("teste22");
-        if (itemDB->nif == request.nif){ //SD11.4
-            so_debug("teste2");
-            if (itemDB->senha == request.senha){//SD11.5 
-                so_success("SD11.5", "%d", index_client);
-                fclose(db);
-                return index_client;
-            }
-            else {
-                so_debug("teste3");
-                index_client = -1;
-                so_error("SD11.5", "");
-            }
-        }    
+   if (request.pidCliente > 0){
+        so_success("SD11","");
+        return RET_SUCCESS;
     }
-    
-    so_debug("teste4");
-    index_client=-1;
-    so_error("SD11.2","");    
-    fclose(db);
+    else {
+        so_error("SD11","");
+    }
 
-    so_debug("> [@return:%d, nome:%s, saldo:%d]", index_client, itemDB->nome, itemDB->saldo);
-    return index_client;
+
+    so_debug("> [@return:%d]", result);
+    return result;
 }
 
 /**
- * @brief SD12      Modifica a estrutura Login recebida no pedido do Cliente:
- *                  se index_client < 0, então preenche o campo pid_servidor_dedicado=-1,
- *                  e segue para o passo SD13. Caso contrário (index_client >= 0):
- *        SD12.1    Preenche os campos nome e saldo da estrutura Login recebida no pedido do
- *                  Cliente com os valores do item de bd_utilizadores.dat para index_client.
- *                  Preenche o campo pid_servidor_dedicado com o PID do processo Servidor
- *                  Dedicado, ficando assim a estrutura Login completamente preenchida;
- *        SD12.2    Abre o ficheiro bd_utilizadores.dat para escrita. Em caso de erro na
- *                  abertura do ficheiro, dá so_error e termina o Servidor Dedicado.
- *                  Caso contrário, dá so_success;
- *        SD12.3    Posiciona o apontador do ficheiro (fseek) para o elemento Login
- *                  correspondente a index_client, mais precisamente, para imediatamente antes
- *                  dos campos a atualizar (pid_cliente e pid_servidor_dedicado). Em caso de
- *                  erro, dá so_error e termina. Caso contrário, dá so_success;
- *        SD12.4    Escreve no ficheiro (acesso direto), na posição atual, os campos pid_cliente
- *                  e pid_servidor_dedicado atualizando assim a estrutura Login correspondente a
- *                  este Cliente na base de dados, e fecha o ficheiro. Em caso de erro, dá
- *                  so_error e termina. Caso contrário, dá so_success.
+ * @brief SD12      Percorre a lista de utilizadores, atualizando a variável indexClient,
+ *                  procurando pelo utilizador com o NIF recebido no pedido do Cliente.
+ *        SD12.1    Se encontrou um utilizador com o NIF recebido,
+ *                  e a Senha registada é igual à que foi recebida no pedido do Cliente,
+ *                  então dá  so_success <indexClient>, e retorna indexClient (vai para SD13).
+ *                  Caso contrário, dá so_error.
+ *        SD12.2    Cria uma resposta indicando erro ao Cliente, preenchendo na estrutura Login o
+ *                  campo pidServidorDedicado=-1. Envia essa mensagem para a fila de mensagens,
+ *                  usando como msgType o PID do processo Cliente. Em caso de erro, dá so_error,
+ *                  caso contrário dá  so_success.
+ *                  Em ambos os casos, retorna erro (USER_NOT_FOUND, vai para SD17).
  *
- * @param request O endereço do pedido do cliente (endereço é necessário pois será alterado)
- * @param nameDB O nome da base de dados
- * @param index_client O índica na base de dados do elemento correspondente ao cliente
- * @param itemDB O elemento da BD correspondente ao cliente
- * @return int Sucesso (0: success, -1: error)
+ * @param request Pedido de Login que foi enviado pelo Cliente.
+ * @return int Em caso de sucesso, retorna o índice do registo do cliente na listUsers (indexClient)
+ *             Em caso de erro, retorna USER_NOT_FOUND
  */
-int reservaUtilizadorBD_SD12(Login *request, char *nameDB, int index_client, Login itemDB) {
-    int result = -1;    // Por omissão retorna erro
-    so_debug("< [@param request:%p, nameDB:%s, index_client:%d, itemDB.pid_servidor_dedicado:%d]", request, nameDB, index_client, itemDB.pid_servidor_dedicado);
+int searchUserDB_SD12(Login request) {
+    int indexClient = USER_NOT_FOUND;    // Por omissão retorna erro
+    so_debug("< [@param request.nif:%d, request.senha:%s]", request.nif, request.senha);
 
-    if (index_client < 0) {
-        request->pid_servidor_dedicado = -1;
-        return result;
+    //SD12.1
+    for(int i = 0; i < MAX_USERS; i++){
+           indexClient++;
+           if(db->listUsers[i].nif == request.nif){
+                if(strcmp(db->listUsers[i].senha, request.senha) == 0 ){
+                    so_success("SD12.1", "%d", indexClient);
+                    return indexClient;
+                }
+                else {
+                    break;
+                }
+        }
     }
-   
-        FILE *db = fopen(nameDB, "r+");
-        if (db){
-            so_success("SD12.2", "");
-        }
-        else {
-            so_error("SD12.2", "");
-            fclose(db);
-        }
     
-    if (fseek(db, index_client, SEEK_SET) == 0) {
-            so_success("SD12.3","");
-        }
-    else {
-            so_error("SD12.3", "");
-            return -1;
+    so_error("SD12.1", "senha errada");
             
-    }
-    if (fread(request, sizeof(Login), 1, db) != 1) {
-            so_error("SD12.4", "");
-            return -1;
-        }
+    //SD12.2
+    msg.msgData.infoLogin.pidServidorDedicado = -1;
+    msg.msgType = request.pidCliente;
+    int status = msgsnd(msgId, &msg, sizeof(msg.msgData), 0);
+    if ( status < 0 ) 
+        so_error("SD12.2", "nao enviou a mensagem");
+    else 
+        so_success("SD12.2", "enviou a mensagem");
+    return USER_NOT_FOUND;
 
-    strcpy(request->nome, itemDB.nome);
-    request->saldo = itemDB.saldo;
-    request->pid_servidor_dedicado = itemDB.pid_servidor_dedicado;
-     
-
-    if (fseek(db,index_client * sizeof(Login),SEEK_SET) == 0) {
-        so_success("SD12.3", ""); 
-    }
-    else {
-        so_error("SD12.3", "");
-    }    
-    if (fwrite(request, sizeof(Login) , 1, db)  < 0) {
-        so_error("SD12.4", "");
-    }
-    else {
-        so_success("SD12.4", "");
-        result = 0;
-    }
-    fclose(db);
-
-
-    so_debug("> [@return:%d, nome:%s, saldo:%d, pid_servidor_dedicado:%d]", result, request->nome, request->saldo, request->pid_servidor_dedicado);
-    return result;
+    so_debug("> [@return:%d]", indexClient);
+    return indexClient;
 }
 
 /**
- * @brief Constrói o nome de um FIFO baseado no prefixo (FILE_PREFIX_SRVDED ou FILE_PREFIX_CLIENT),
- *        PID (passado) e sufixo (FILE_SUFFIX_FIFO).
+ * @brief SD13      Reserva a entrada do utilizador na BD, atualizando na Lista de Utilizadores,
+ *                  na posição indexClient, os campos pidServidorDedicado e pidCliente (com o
+ *                  valor do pedido do Cliente), e dá so_success.
  *
- * @param buffer Buffer onde vai colocar o resultado
- * @param buffer_size Tamanho do buffer anterior
- * @param prefix Prefixo do nome do FIFO (deverá ser FILE_PREFIX_SRVDED ou FILE_PREFIX_CLIENT)
- * @param pid PID do processo respetivo
- * @param suffix Sufixo do nome do FIFO (deverá ser FILE_SUFFIX_FIFO)
- * @return int Sucesso (0: success, -1: error)
+ * @param indexClient O índice na Lista de Utilizadores do elemento correspondente ao cliente
+ * @param pidCliente Process ID do cliente
+ * @return int Sucesso (RET_SUCCESS | RET_ERROR)
  */
-int buildNomeFifo(char *buffer, int buffer_size, char *prefix, int pid, char *suffix) {
-    int result = -1;    // Por omissão retorna erro
-    so_debug("< [@param buffer:%s, buffer_size:%d, prefix:%s, pid:%d, suffix:%s]", buffer, buffer_size, prefix, pid, suffix);
+int reserveUserDB_SD13(int indexClient, int pidCliente) { 
+    int result = RET_ERROR;    // Por omissão retorna erro
+    so_debug("< [@param indexClient:%d, pidCliente:%d]", indexClient, pidCliente);
 
-    if (snprintf(buffer, buffer_size, "%s%d%s", prefix, pid, suffix) > 0) {
-        result = 0;
-    }
-    
-    so_debug("> [@return:%d, buffer:%s]", result, buffer);
-    return result;
-}
-
-/**
- * @brief SD13  Usa buildNomeFifo() para definir nameFifo como "sd-<pid_servidor_dedicado>.fifo".
- *              Cria o ficheiro com organização FIFO (named pipe) do Servidor Dedicado, de nome
- *              sd-<pid_servidor_dedicado>.fifo na diretoria local. Se houver erro na operação,
- *              dá so_error, e termina o Servidor Dedicado. Caso contrário, dá so_success;
- *
- * @param nameFifo String preenchida com o nome do FIFO (i.e., sd-<pid_servidor_dedicado>.fifo)
- * @return int Sucesso (0: success, -1: error)
- */
-int createFifo_SD13(char *nameFifo) {
-    int result = -1;    // Por omissão retorna erro
-    so_debug("< [@param nameFifo:%s]", nameFifo);
-    buildNomeFifo(nameFifo, SIZE_FILENAME, FILE_PREFIX_SRVDED, getpid(), FILE_SUFFIX_FIFO);
-
-    result = mkfifo(nameFifo,0666);
-    if (result == 0) {          
-        so_success("SD13", "");
-    }
-    else {
-        result = -1; 
-        so_error("SD13", "");
-    }
+    db->listUsers[indexClient].pidServidorDedicado = getpid();
+    db->listUsers[indexClient].pidCliente = pidCliente;
+    so_success("SD13", ""); 
+    return RET_SUCCESS;
     
     so_debug("> [@return:%d]", result);
     return result;
 }
 
 /**
- * @brief SD14  Usa buildNomeFifo() para definir o nome nameFifo como "cli-<pid_cliente>.fifo".
- *              Abre o FIFO do Cliente, de nome cli-<pid_servidor_dedicado>.fifo na diretoria
- *              local, para escrita, escreve (acesso direto) no FIFO do Cliente a estrutura
- *              Login recebida no pedido do Cliente, e fecha o mesmo FIFO.  Em caso de erro, dá
- *              so_error, e segue para o passo SD17. Caso contrário, dá so_success.
+ * @brief SD14      Cria a resposta indicando sucesso ao Cliente:
+ *        SD14.1    Preenche na mensagem de resposta os campos nome e saldo da estrutura Login
+ *                  com os valores da Lista de Utilizadores para indexClient. Preenche o campo
+ *                  pidServidorDedicado com o PID do processo Servidor Dedicado, e dá so_success.
+ *        SD14.2    Envia a lista de produtos ao Cliente: Percorre a Lista de Produtos, e por cada
+ *                  produto com stock > 0, preenche a estrutura Produto da mensagem de resposta
+ *                  com os dados do produto em questão, e envia, usando como msgType o PID do
+ *                  processo Cliente, a mensagem de resposta ao Cliente.
+ *                  Em caso de erro, dá so_error e retorna erro (vai para SD17).
+ *                  No fim de enviar a lista, dá so_success.
+ *        SD14.3    Depois de ter enviado todas as mensagens (uma por cada produto com stock > 0),
+ *                  preenche uma nova mensagem final, preenchendo a estrutura Produto novamente,
+ *                  colocando apenas o campo idProduto=FIM_LISTA_PRODUTOS, o que se convencionou
+ *                  que significa que não há mais produtos a listar. Envia, usando como msgType o
+ *                  PID do processo Cliente, a mensagem de resposta ao Cliente. Em caso de erro, dá
+ *                  so_error e retorna erro (vai para SD17). Caso contrário, dá so_success.
  *
- * @param ackLogin Estrutura Login a escrever no FIFO do Cliente
- * @param nameFifo String preenchida com o nome do FIFO (i.e., cli-<pid_cliente>.fifo)
- * @return int Sucesso (0: success, -1: error)
+ * @param indexClient O índice na Lista de Utilizadores do elemento correspondente ao cliente
+ * @param pidCliente Process ID do cliente
+ * @return int Sucesso (RET_SUCCESS | RET_ERROR)
  */
-int sendAckLogin_SD14(Login ackLogin, char *nameFifo) {
-    int result = -1;    // Por omissão retorna erro
-    so_debug("< [@param ackLogin.nome:%s, ackLogin.saldo:%d, ackLogin.pid_servidor_dedicado:%d, nameFifo:%s]",ackLogin.nome, ackLogin.saldo, ackLogin.pid_servidor_dedicado, nameFifo);
-    buildNomeFifo(nameFifo, SIZE_FILENAME, FILE_PREFIX_CLIENT, getpid(), FILE_SUFFIX_FIFO);
-    
-    
+int sendProductList_SD14(int indexClient, int pidCliente) {
+    int result = RET_ERROR;    // Por omissão retorna erro
+    so_debug("< [@param indexClient:%d, pidCliente:%d]", indexClient, pidCliente);
 
-    FILE *cliente = fopen(nameFifo, "w+");
-    
-    if (cliente) {
-        if (fwrite(&ackLogin, sizeof(Login), 1, cliente) >= 0) {
-            so_success("SD14", "");
-            result = 0;
-            fclose(cliente);
+    //SD14.1
+    strcpy(msg.msgData.infoLogin.nome, db->listUsers[indexClient].nome);
+    msg.msgData.infoLogin.saldo = db->listUsers[indexClient].saldo;
+    msg.msgData.infoLogin.pidServidorDedicado = db->listUsers[indexClient].pidServidorDedicado;
+    so_success("SD14.1", "");
+
+    //SD14.2
+    msg.msgType = pidCliente;
+    for(int i = 0; i < MAX_PRODUCTS; i++) { 
+        if (db->listProducts[i].stock > 0){
+            msg.msgData.infoProduto = db->listProducts[i];
+            
+            int status = msgsnd(msgId, &msg, sizeof(msg.msgData), 0); //manda a msg
+            if ( status < 0 ) {
+                so_error("SD14.2", "nao enviou a mensagem");
+                return RET_ERROR;
             }
-        else {
-            so_error("SD14", "");
-            deleteFifoAndExit_SD17();
         }
     }
-    else {
+    so_success("SD14.2","enviou as mensagens");
 
-        so_error("SD14", "");
-        deleteFifoAndExit_SD17();
-    }
-
-    so_debug("> [@return:%d, nameFifo:%s]", result, nameFifo);
-    return result;
-}
-
-/**
- * @brief SD15  Abre o FIFO do Servidor Dedicado, lê uma string enviada pelo Cliente, e fecha o
- *              mesmo FIFO. Em caso de erro, dá so_error, e segue para o passo SD17.
- *              Caso contrário, dá so_success <string enviada>.
- *
- * @param nameFifo o nome do FIFO do Servidor Dedicado (sd-<pid_servidor_dedicado>.fifo)
- * @return int Sucesso (0: success, -1: error)
- */
-int readFimSessao_SD15(char *nameFifo) {
-    int result = -1;    // Por omissão retorna erro
-    so_debug("< [@param nameFifo:%s]", nameFifo);
-
-    FILE *abre = fopen(nameFifo, "r+");
-    char string[100];
-    so_debug("teste");
-    if(so_fgets (string, 100, abre)){
-        so_success("SD15", "%s", string);
-        result = 0;
-        fclose(abre);
+    //SD14.3
+    msg.msgData.infoProduto.idProduto = FIM_LISTA_PRODUTOS;
+    int status = msgsnd(msgId, &msg, sizeof(msg.msgData), 0); //manda a msg
+    if ( status < 0 ) {
+        so_error("SD14.3", "nao enviou a mensagem final");
+        return RET_ERROR;
     }
     else {
-        so_error("SD15", "");
-        deleteFifoAndExit_SD17();
+        so_success("SD14.3", "enviou a mensagem final");
+        return RET_SUCCESS;
     }
-    
 
     so_debug("> [@return:%d]", result);
     return result;
 }
 
 /**
- * @brief SD16      Modifica a estrutura Login recebida no pedido do Cliente,
- *                  por forma a terminar a sessão:
- *        SD16.1    Preenche os campos pid_cliente=-1 e pid_servidor_dedicado=-1;
- *        SD16.2    Abre o ficheiro bd_utilizadores.dat na diretoria local para escrita. Em caso
- *                  de erro na abertura do ficheiro, dá so_error, e segue para o passo SD17.
- *                  Caso contrário, dá so_success;
- *        SD16.3    Posiciona o apontador do ficheiro (fseek) para o elemento Login
- *                  correspondente a index_client, mais precisamente, para imediatamente antes
- *                  dos campos a atualizar (pid_cliente e pid_servidor_dedicado). Em caso de
- *                  erro, dá so_error, e segue para o passo SD17. Caso contrário, dá so_success;
- *        SD16.4    Escreve no ficheiro (acesso direto), na posição atual, os campos pid_cliente
- *                  e pid_servidor_dedicado atualizando assim a estrutura Login correspondente a
- *                  este Cliente na base de dados, e fecha o ficheiro. Em caso de erro, dá
- *                  so_error, caso contrário, dá so_success.
- *                  Em ambos casos, segue para o passo SD17;
+ * @brief SD15      Lê da fila de mensagens a resposta do Cliente: uma única mensagem com msgType
+ *                  igual ao PID deste processo Servidor Dedicado, indicando no campo idProduto
+ *                  qual foi o produto escolhido pelo Cliente. Em caso de erro, dá so_error, e
+ *                  retorna erro (vai para SD17). Caso contrário, dá so_success.
  *
- * @param clientRequest O endereço do pedido do cliente (endereço é necessário pois será alterado)
- * @param nameDB O nome da base de dados
- * @param index_client O índica na base de dados do elemento correspondente ao cliente
- * @return int Sucesso (0: success, -1: error)
+ * @return MsgContent Elemento com os dados preenchidos. Se nif==USER_NOT_FOUND, significa que o elemento é inválido
  */
-int terminaSrvDedicado_SD16(Login *clientRequest, char *nameDB, int index_client) {
-    int result = -1;    // Por omissão retorna erro
-    so_debug("< [@param clientRequest:%p, nameDB:%s, index_client:%d]", clientRequest, nameDB, index_client);
-
-    clientRequest->pid_cliente = -1;
-    clientRequest->pid_servidor_dedicado = -1;
-
-    FILE *db = fopen(nameDB, "w+");
-    
-    if (db){
-        so_success("SD16.2", "");
-    }
-    else {
-        
-        so_error("SD16.2", "");
-        deleteFifoAndExit_SD17();
-    }
-
-    if (fseek(db,index_client,SEEK_SET) == 0) {
-        so_success("SD16.3", ""); 
-    }
-    else {
-        so_error("SD16.3", "");
-        deleteFifoAndExit_SD17();
-    }    
-    if (fwrite(&clientRequest->pid_cliente, sizeof(Login) , 1, db) < 0 || fwrite(&clientRequest->pid_servidor_dedicado, sizeof(Login), 1, db) < 0) {
-        
-        so_error("SD16.4", "");
-    }
-    else {
-        so_success("SD16.4", "");
-        result = 0;
-    }
-    deleteFifoAndExit_SD17();
-    fclose(db);
-
-
-    so_debug("> [@return:%d, pid_cliente:%d, pid_servidor_dedicado:%d]", result, clientRequest->pid_cliente, clientRequest->pid_servidor_dedicado);
-    return result;
-}
-
-/**
- * @brief SD17  Usa buildNomeFifo() para definir um nameFifo "sd-<pid_servidor_dedicado>.fifo".
- *              Remove o FIFO sd-<pid_servidor_dedicado>.fifo da diretoria local. Em caso de
- *              erro, dá so_error, caso contrário, dá so_success. Em ambos os casos, termina o
- *              processo Servidor Dedicado.
- */
-void deleteFifoAndExit_SD17() {
+MsgContent receiveClientOrder_SD15() {
+    MsgContent msg;
+    msg.msgData.infoLogin.nif = USER_NOT_FOUND;   // Por omissão retorna erro
     so_debug("<");
 
-    char nameFifoServidorDedicado[SIZE_FILENAME];
-    buildNomeFifo(nameFifoServidorDedicado, SIZE_FILENAME, FILE_PREFIX_SRVDED, getpid(), FILE_SUFFIX_FIFO);
+    ssize_t size = msgrcv(msgId, &msg, sizeof(msg.msgData), getpid() , 0);
+    if ( size < 0 ) {
+        so_error("SD15", "bad message received");
+        return msg;
+    }
+    else {
+        so_success("SD15", "");
+    }
+    so_debug("> [@return nif:%d, idProduto:%d, pidCliente:%d]", msg.msgData.infoLogin.nif,
+                        msg.msgData.infoProduto.idProduto, msg.msgData.infoLogin.pidCliente);
+    return msg;
+}
 
-    if (unlink( nameFifoServidorDedicado ) == 0)
-        so_success("SD17", "");
-    else
-        so_error("SD17", "");
+/**
+ * @brief SD16      Produz a resposta final a dar ao Cliente:
+ *        SD16.1    Se o idProduto enviado pelo Cliente for PRODUCT_NOT_FOUND, então preenche o
+ *                  campo idProduto=PRODUTO_NAO_COMPRADO e dá so_error.
+ *        SD16.2    Caso contrário, percorre a lista de produtos, procurando pelo produto com o
+ *                  idProduto recebido no pedido do Cliente.
+ *                  Se não encontrou nenhum produto com o idProduto recebido, ou se encontrou
+ *                  esse produto, mas o mesmo já não tem stock (porque, entretanto, já esgotou),
+ *                  preenche o campo idProduto=PRODUTO_NAO_COMPRADO e dá so_error.
+ *                  Caso contrário, decrementa o stock do produto na Lista de Produtos, preenche
+ *                  o campo idProduto=PRODUTO_COMPRADO, e dá  so_success.
+ *                  Atenção: Deve cuidar para que o acesso ao stock do produto seja feito em exclusão!
+ *        SD16.3    Envia, usando como msgType o PID do processo Cliente, a mensagem de resposta de
+ *                  conclusão ao Cliente. Em caso de erro, dá so_error. Senão, dá so_success.
+ *
+ * @param idProduto O produto pretendido pelo Utilizador Cliente
+ * @param pidCliente Process ID do cliente
+ * @return int Sucesso (RET_SUCCESS | RET_ERROR)
+ */
+int sendPurchaseAck_SD16(int idProduto, int pidCliente) {
+    int result = RET_ERROR;    // Por omissão retorna erro
+    so_debug("< [@param idProduto:%d, pidCliente:%d]", idProduto, pidCliente);
+    
+    struct sembuf DOWN = {SEM_PRODUCTS, -1, 0};  
+    struct sembuf UP = {SEM_PRODUCTS, 1, 0};   
 
+    semop(semId, &DOWN, 1);
+
+    //SD16.1
+    if (idProduto == PRODUCT_NOT_FOUND){
+        msg.msgData.infoProduto.idProduto = PRODUTO_NAO_COMPRADO;
+        so_error("SD16.1", "produto nao comprado");
+    } 
+    else {
+        //SD16.2
+        int a = 0;  
+        for(int i = 0; i < MAX_PRODUCTS; i++) { 
+                if (db->listProducts[i].idProduto == idProduto){
+                    if(db->listProducts[i].stock <= 0){
+                        msg.msgData.infoProduto.idProduto = PRODUTO_NAO_COMPRADO;
+                        so_error("SD16.2", "produto sem stock");
+                        break;
+                    }
+                db->listProducts[i].stock--;
+                msg.msgData.infoProduto.idProduto = PRODUTO_COMPRADO;
+                a = 1; 
+                so_success("SD16.2", "produto comprado");
+                break;
+            }
+        }
+        if (a == 0){
+            msg.msgData.infoProduto.idProduto = PRODUTO_NAO_COMPRADO;
+            so_error("SD16.2", "produto nao comprado");
+        }    
+    }
+    //SD116.3
+    msg.msgType = pidCliente;
+    int status = msgsnd(msgId, &msg, sizeof(msg.msgData), 0); //manda a msg
+    semop(semId, &UP, 1);
+    if ( status < 0 ) {
+        so_error("SD16.3", "nao enviou a mensagem final");
+        return RET_ERROR;
+    }
+    else {
+        so_success("SD16.3", "enviou a mensagem final");
+        return RET_SUCCESS;
+    }
+    
+
+    so_debug("> [@return:%d]", result);
+    return result;
+}
+
+/**
+ * @brief SD17      Passo terminal para fechar o Servidor Dedicado:
+ *                  dá so_success "Shutdown Servidor Dedicado", e faz as seguintes ações:
+ *        SD17.1    Atualiza, na Lista de utilizadores para a posição indexClient, os campos
+ *                  pidServidorDedicado=-1 e pidCliente=-1, e dá so_success.
+ *        SD17.2    Termina o processo Servidor Dedicado.
+ */
+void shutdownAndExit_SD17() {
+    so_debug("<");
+    
+    //SD17
+    so_success("SD17", "Shutdown Servidor Dedicado");
+    //SD17.1
+    db->listUsers[indexClient].pidCliente = -1;
+    db->listUsers[indexClient].pidServidorDedicado = -1;
+    so_success("SD17.1", "");
+
+    // SD17.2: Termina o processo Servidor Dedicado.
     so_debug(">");
-    exit(0);
+    exit(RET_SUCCESS);
 }
 
 /**
  * @brief SD18  O sinal armado SIGUSR1 serve para que o Servidor Dedicado seja alertado quando o
  *              Servidor principal quer terminar. Se o Servidor Dedicado receber esse sinal,
  *              envia um sinal SIGUSR2 ao Cliente (para avisá-lo do Shutdown), dá so_success, e
- *              vai para o passo SD16 para terminar de forma correta o Servidor Dedicado.
+ *              vai para o passo terminal SD17.
  *
  * @param sinalRecebido nº do Sinal Recebido (preenchido pelo SO)
  */
-void trataSinalSIGUSR1_SD18(int sinalRecebido) {
+void handleSignalSIGUSR1_SD18(int sinalRecebido) {
     so_debug("< [@param sinalRecebido:%d]", sinalRecebido);
 
-    kill(clientRequest.pid_cliente, SIGUSR2);
+    kill(db->listUsers[indexClient].pidCliente, SIGUSR2);
     so_success("SD18", "");
-    terminaSrvDedicado_SD16(&clientRequest, "bd_utilizadores.dat", index_client);
+    shutdownAndExit_SD17();
 
     so_debug(">");
 }
